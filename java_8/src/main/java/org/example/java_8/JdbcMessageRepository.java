@@ -10,13 +10,18 @@ import java.util.Optional;
 
 @Repository
 public class JdbcMessageRepository {
+    private static final String SELECT_MESSAGE = """
+            SELECT m.id, m.content, m.created_at, u.id AS author_id, u.username AS author_username
+            FROM messages m JOIN users u ON u.id = m.author_id
+            """;
+
     private final JdbcTemplate jdbcTemplate;
 
     private final RowMapper<Message> messageRowMapper = (rs, rowNum) -> {
-        Message message = new Message();
+        User author = new User(rs.getString("author_username"));
+        author.setId(rs.getLong("author_id"));
+        Message message = new Message(rs.getString("content"), author);
         message.setId(rs.getLong("id"));
-        message.setContent(rs.getString("content"));
-        message.setAuthor(rs.getString("author"));
         message.setCreatedAt(rs.getTimestamp("created_at").toLocalDateTime());
         return message;
     };
@@ -26,37 +31,54 @@ public class JdbcMessageRepository {
     }
 
     public Message save(Message message) {
-        String sql = "INSERT INTO messages (content, author) VALUES (?, ?)";
+        String sql = "INSERT INTO messages (content, author_id) VALUES (?, ?)";
         GeneratedKeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcTemplate.update(connection -> {
             var statement = connection.prepareStatement(sql, new String[]{"id"});
             statement.setString(1, message.getContent());
-            statement.setString(2, message.getAuthor());
+            statement.setLong(2, message.getAuthor().getId());
             return statement;
         }, keyHolder);
         if (keyHolder.getKey() != null) {
             message.setId(keyHolder.getKey().longValue());
         }
-        return message;
+        return findById(message.getId()).orElse(message);
+    }
+
+    public int saveAll(List<Message> messages) {
+        String sql = "INSERT INTO messages (content, author_id) VALUES (?, ?)";
+        jdbcTemplate.batchUpdate(sql, messages, 100,
+                (statement, message) -> {
+                    statement.setString(1, message.getContent());
+                    statement.setLong(2, message.getAuthor().getId());
+                });
+        return messages.size();
     }
 
     public Optional<Message> findById(Long id) {
-        String sql = "SELECT id, content, author, created_at FROM messages WHERE id = ?";
-        List<Message> results = jdbcTemplate.query(sql, messageRowMapper, id);
-        return results.stream().findFirst();
+        return jdbcTemplate.query(SELECT_MESSAGE + " WHERE m.id = ?", messageRowMapper, id)
+                .stream().findFirst();
     }
 
-    public List<Message> findLatest(int limit) {
-        String sql = "SELECT id, content, author, created_at FROM messages " +
-                "ORDER BY created_at DESC LIMIT ?";
-        return jdbcTemplate.query(sql, messageRowMapper, limit);
+    public List<Message> findPage(int limit, int offset) {
+        return jdbcTemplate.query(SELECT_MESSAGE +
+                " ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?",
+                messageRowMapper, limit, offset);
     }
 
-    public int deleteById(Long id) {
-        return jdbcTemplate.update("DELETE FROM messages WHERE id = ?", id);
+    public List<Message> findPageByAuthor(String username, int limit, int offset) {
+        return jdbcTemplate.query(SELECT_MESSAGE +
+                        " WHERE u.username = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?",
+                messageRowMapper, username, limit, offset);
     }
 
-    public void clear() {
-        jdbcTemplate.update("DELETE FROM messages");
+    public long count() {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM messages", Long.class);
+    }
+
+    public long countByAuthor(String username) {
+        return jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM messages m JOIN users u ON u.id = m.author_id WHERE u.username = ?",
+                Long.class, username);
     }
 }

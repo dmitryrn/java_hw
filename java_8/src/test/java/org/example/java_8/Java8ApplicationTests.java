@@ -8,9 +8,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
-import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -25,18 +25,7 @@ class Java8ApplicationTests {
     private MockMvc mockMvc;
 
     @Test
-    void getMessagesReturnsInitialData() throws Exception {
-        mockMvc.perform(get("/messages"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(2)))
-                .andExpect(jsonPath("$[0].author", is(notNullValue())))
-                .andExpect(jsonPath("$[0].content", anyOf(
-                        is("Hello, JDBC Spring!"),
-                        is("Now using H2 database via JdbcTemplate."))));
-    }
-
-    @Test
-    void postMessageCreatesMessage() throws Exception {
+    void postAndGetMessagesWithPaginationAndAuthorFilter() throws Exception {
         String payload = "{\"content\":\"New message via POST\",\"author\":\"Tester\"}";
 
         mockMvc.perform(post("/messages")
@@ -47,8 +36,24 @@ class Java8ApplicationTests {
                 .andExpect(jsonPath("$.author", is("Tester")))
                 .andExpect(jsonPath("$.content", is("New message via POST")));
 
-        mockMvc.perform(get("/messages"))
+        mockMvc.perform(get("/messages").param("page", "0").param("size", "1")
+                        .param("author", "Tester"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(3)));
+                .andExpect(jsonPath("$.content", hasSize(1)))
+                .andExpect(jsonPath("$.content[0].author", is("Tester")))
+                .andExpect(jsonPath("$.totalElements", equalTo(1)));
+    }
+
+    @Test
+    void batchCreatesMessagesAndMissingIdReturnsNotFound() throws Exception {
+        mockMvc.perform(post("/messages/batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[{\"content\":\"One\",\"author\":\"A\"}," +
+                                "{\"content\":\"Two\",\"author\":\"B\"}]"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.created", is(2)));
+
+        mockMvc.perform(get("/messages/99999"))
+                .andExpect(status().isNotFound());
     }
 }
