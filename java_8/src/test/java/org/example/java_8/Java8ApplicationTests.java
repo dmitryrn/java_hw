@@ -7,6 +7,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
@@ -33,14 +34,14 @@ class Java8ApplicationTests {
                         .content(payload))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id", is(notNullValue())))
-                .andExpect(jsonPath("$.author", is("Tester")))
+                .andExpect(jsonPath("$.authorUsername", is("Tester")))
                 .andExpect(jsonPath("$.content", is("New message via POST")));
 
         mockMvc.perform(get("/messages").param("page", "0").param("size", "1")
                         .param("author", "Tester"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content", hasSize(1)))
-                .andExpect(jsonPath("$.content[0].author", is("Tester")))
+                .andExpect(jsonPath("$.content[0].authorUsername", is("Tester")))
                 .andExpect(jsonPath("$.totalElements", equalTo(1)));
     }
 
@@ -55,5 +56,37 @@ class Java8ApplicationTests {
 
         mockMvc.perform(get("/messages/99999"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void nPlusOneAndOptimizedEndpointsReturnMessages() throws Exception {
+        mockMvc.perform(get("/messages/nplus1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(3)));
+
+        mockMvc.perform(get("/messages/optimized"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(3)));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void failEndpointDemonstratesLazyInitializationException() throws Exception {
+        mockMvc.perform(get("/messages/fail/1"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .content().string(org.hamcrest.Matchers.containsString("LazyInitializationException")));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void transactionalAndDtoEndpointsAvoidLazyInitializationFailure() throws Exception {
+        mockMvc.perform(get("/messages/1/transactional"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authorUsername", is("Alice")));
+
+        mockMvc.perform(get("/messages/1/dto"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authorUsername", is("Alice")));
     }
 }

@@ -1,5 +1,9 @@
 package org.example.java_8;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,32 +15,74 @@ import java.util.List;
 public class MessageService {
     private static final int MAX_PAGE_SIZE = 100;
 
-    private final JdbcMessageRepository messageRepository;
-    private final JdbcUserRepository userRepository;
+    private final MessageRepository messageRepository;
+    private final UserRepository userRepository;
 
-    public MessageService(JdbcMessageRepository messageRepository, JdbcUserRepository userRepository) {
+    public MessageService(MessageRepository messageRepository, UserRepository userRepository) {
         this.messageRepository = messageRepository;
         this.userRepository = userRepository;
     }
 
-    public Message getMessage(Long id) {
+    @Transactional(readOnly = true)
+    public MessageResponse getMessage(Long id) {
+        Message message = messageRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Message " + id + " was not found"));
+        return MessageResponse.from(message);
+    }
+
+    @Transactional(readOnly = true)
+    public MessageResponse getMessageTransactional(Long id) {
+        Message message = messageRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Message " + id + " was not found"));
+        // Access the LAZY association and map it while the persistence context is open.
+        message.getAuthor().getUsername();
+        return MessageResponse.from(message);
+    }
+
+    // The repository entity graph loads author in the query, so this method needs no transaction.
+    public MessageResponse getMessageDto(Long id) {
+        Message message = messageRepository.findFirstById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Message " + id + " was not found"));
+        return MessageResponse.from(message);
+    }
+
+    // Intentionally not transactional: the returned entity is detached, so its lazy author
+    // cannot be initialized by the controller after this method returns.
+    public Message getMessageToFail(Long id) {
         return messageRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Message " + id + " was not found"));
     }
 
+    @Transactional(readOnly = true)
     public MessagePage getMessages(int page, int size, String author) {
         validatePage(page, size);
-        int offset = page * size;
-        boolean filterByAuthor = author != null && !author.isBlank();
-        List<Message> content = filterByAuthor
-                ? messageRepository.findPageByAuthor(author, size, offset)
-                : messageRepository.findPage(size, offset);
-        long total = filterByAuthor
-                ? messageRepository.countByAuthor(author)
-                : messageRepository.count();
-        return new MessagePage(content.stream().map(MessageResponse::from).toList(),
-                page, size, total, (int) Math.ceil((double) total / size));
+        Sort sort = Sort.by(Sort.Direction.DESC, "createdAt")
+                .and(Sort.by(Sort.Direction.DESC, "id"));
+        Pageable pageable = PageRequest.of(page, size, sort);
+        Page<Message> result = author == null || author.isBlank()
+                ? messageRepository.findAll(pageable)
+                : messageRepository.findByAuthor_Username(author, pageable);
+        return new MessagePage(result.getContent().stream().map(MessageResponse::from).toList(),
+                page, size, result.getTotalElements(), result.getTotalPages());
+    }
+
+    @Transactional(readOnly = true)
+    public List<MessageResponse> getLatestMessagesNPlus1() {
+        List<Message> messages = messageRepository.findTop30ByCreatedAtIsNotNullOrderByCreatedAtDesc();
+        // Accessing each lazy author triggers one extra SELECT per distinct author.
+        messages.forEach(message -> message.getAuthor().getUsername());
+        return messages.stream().map(MessageResponse::from).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<MessageResponse> getLatestMessagesOptimized() {
+        return messageRepository.findTop30ByOrderByCreatedAtDesc().stream()
+                .map(MessageResponse::from)
+                .toList();
     }
 
     @Transactional
@@ -50,7 +96,7 @@ public class MessageService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "At least one message is required");
         }
         List<Message> messages = requests.stream().map(this::toMessage).toList();
-        return messageRepository.saveAll(messages);
+        return messageRepository.saveAll(messages).size();
     }
 
     private Message toMessage(MessageRequest request) {
@@ -59,11 +105,13 @@ public class MessageService {
         }
         String username = request.author() == null || request.author().isBlank()
                 ? "Anonymous" : request.author().trim();
-        return new Message(request.content(), userRepository.findOrCreate(username));
+        User author = userRepository.findByUsername(username)
+                .orElseGet(() -> userRepository.save(new User(username)));
+        return new Message(request.content(), author);
     }
 
     private void validatePage(int page, int size) {
-        if (page < 0 || size < 1 || size > MAX_PAGE_SIZE || page > Integer.MAX_VALUE / size) {
+        if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "page must be non-negative and size must be between 1 and " + MAX_PAGE_SIZE);
         }
