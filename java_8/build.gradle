@@ -4,6 +4,19 @@ plugins {
     id 'io.spring.dependency-management' version '1.1.7'
 }
 
+// Keep JPA/Hibernate versions together. These match the Spring Boot 4.1.2 BOM.
+ext {
+    springDataJpaVersion = '4.1.2'
+    hibernateVersion = '7.4.13.Final'
+}
+
+dependencyManagement {
+    dependencies {
+        dependency "org.springframework.data:spring-data-jpa:${springDataJpaVersion}"
+        dependency "org.hibernate.orm:hibernate-core:${hibernateVersion}"
+    }
+}
+
 group = 'org.example'
 version = '0.0.1-SNAPSHOT'
 description = 'java_8'
@@ -30,4 +43,32 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+tasks.register('runTestDataInitializer') {
+    group = 'application'
+    description = 'Posts sample messages to the running application using curl.'
+
+    doLast {
+        def messages = (1..100).collect { index ->
+            def authorNumber = ((index - 1) % 10) + 1
+            [content: "Profiler test message ${index}", author: "ProfilerUser${authorNumber}"]
+        }
+
+        messages.each { message ->
+            def payload = groovy.json.JsonOutput.toJson(message)
+            def process = new ProcessBuilder(
+                    'curl', '--fail', '--silent', '--show-error',
+                    '-X', 'POST', 'http://localhost:8080/api/messages',
+                    '-H', 'Content-Type: application/json',
+                    '--data', payload
+            ).inheritIO().start()
+
+            if (process.waitFor() != 0) {
+                throw new GradleException('Failed to POST test message. Is the app running at http://localhost:8080?')
+            }
+        }
+
+        logger.lifecycle("Posted ${messages.size()} test messages.")
+    }
 }
