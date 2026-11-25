@@ -1,0 +1,47 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: java_8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Show Java version
+        run: java -version
+
+      - name: Build and test
+        id: build
+        run: ./gradlew clean build
+
+      - name: Show build and test status
+        if: always() && steps.build.outcome != 'skipped'
+        run: |
+          echo "Build and test status: ${{ steps.build.outcome }}"
+
+      - name: Upload application JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-8-application
+          path: |
+            java_8/build/libs/*.jar
+            !java_8/build/libs/*-plain.jar
+          if-no-files-found: error
