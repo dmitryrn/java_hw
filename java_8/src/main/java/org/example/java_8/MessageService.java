@@ -1,5 +1,7 @@
 package org.example.java_8;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -7,6 +9,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
@@ -17,10 +21,13 @@ public class MessageService {
 
     private final MessageRepository messageRepository;
     private final UserRepository userRepository;
+    private final Counter messagesCreated;
 
-    public MessageService(MessageRepository messageRepository, UserRepository userRepository) {
+    public MessageService(MessageRepository messageRepository, UserRepository userRepository,
+                          MeterRegistry meterRegistry) {
         this.messageRepository = messageRepository;
         this.userRepository = userRepository;
+        this.messagesCreated = meterRegistry.counter("messages.saved");
     }
 
     @Transactional(readOnly = true)
@@ -87,7 +94,9 @@ public class MessageService {
 
     @Transactional
     public MessageResponse saveMessage(MessageRequest request) {
-        return MessageResponse.from(messageRepository.save(toMessage(request)));
+        MessageResponse response = MessageResponse.from(messageRepository.save(toMessage(request)));
+        countAfterCommit(1);
+        return response;
     }
 
     @Transactional
@@ -96,7 +105,18 @@ public class MessageService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "At least one message is required");
         }
         List<Message> messages = requests.stream().map(this::toMessage).toList();
-        return messageRepository.saveAll(messages).size();
+        int created = messageRepository.saveAll(messages).size();
+        countAfterCommit(created);
+        return created;
+    }
+
+    private void countAfterCommit(int count) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                messagesCreated.increment(count);
+            }
+        });
     }
 
     private Message toMessage(MessageRequest request) {
